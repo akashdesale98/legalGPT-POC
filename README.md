@@ -1,7 +1,7 @@
 # Indian Legal GPT — POC
 
 A RAG-based legal AI system for Indian law, starting with the **Constitution of India**.
-uilt with Qdrant (vector DB), Ollama (local LLM), Go (interactive CLI), and Python (ingest pipeline).
+Built with Qdrant (vector DB), Ollama (local LLM), Go (interactive CLI), and Python (ingest pipeline).
 
 ---
 
