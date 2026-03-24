@@ -1,7 +1,7 @@
 # Indian Legal GPT — POC
 
 A RAG-based legal AI system for Indian law, starting with the **Constitution of India**.
-Built with Qdrant (vector DB), Ollama (local LLM), Go (API), and Python (ingest pipeline).
+uilt with Qdrant (vector DB), Ollama (local LLM), Go (interactive CLI), and Python (ingest pipeline).
 
 ---
 
@@ -17,12 +17,11 @@ constitution.pdf
   qdrant_loader.py →  Upsert into Qdrant collection
       │
       ▼
-[Qdrant Vector DB]  (localhost:6333)
+[Qdrant Vector DB]  (localhost:6333 REST / 6334 gRPC)
       │
       ▼
-[Go API Server]     (localhost:8080)
-  POST /api/query  →  embed query → search Qdrant → call Ollama → return answer + sources
-  GET  /health
+[Go Interactive CLI]
+  >> user question  →  embed query → search Qdrant → call Ollama → print answer + sources
       │
       ▼
 [Ollama LLM]        (localhost:11434)
@@ -46,7 +45,7 @@ constitution.pdf
 ## Step 1 — Start Qdrant
 
 ```bash
-docker run -d --name qdrant -p 6333:6333 qdrant/qdrant
+docker run -d --name qdrant -p 6333:6333 -p 6334:6334 qdrant/qdrant
 ```
 
 Verify: open http://localhost:6333/dashboard in your browser.
@@ -122,107 +121,61 @@ Expected output:
 
 ---
 
-## Step 4 — Start the Go API
+## Step 4 — Build the CLI Tool
 
 ```bash
 # From the project root
-go run .
+go build -o legal-gpt.exe .
+```
+
+---
+
+## Step 5 — Ask Questions (Interactive Mode)
+
+```bash
+.\legal-gpt.exe
 ```
 
 Expected output:
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Indian Legal GPT API
-  Listening : http://localhost:8080
-  Qdrant    : localhost:6333
-  Ollama    : http://localhost:11434
-  Embed     : nomic-embed-text  |  Chat: llama3.2
+  Indian Legal GPT — Interactive CLI
+  Qdrant     : localhost:6334
+  Ollama     : http://localhost:11434
+  Embed      : nomic-embed-text
+  Chat       : llama3.2
+  Collection : constitution
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-```
+  Type your question and press Enter.
+  Type 'exit' or 'quit' to stop.
 
----
-
-## Step 5 — Query the API
-
-### Health check
-
-```bash
-curl http://localhost:8080/health
-```
-
-```json
-{"service": "indian-legal-gpt", "status": "ok"}
-```
-
-### Ask a constitutional question
-
-```bash
-curl -s -X POST http://localhost:8080/api/query \
-  -H "Content-Type: application/json" \
-  -d '{"query": "What are the fundamental rights of a citizen?"}' | jq .
+>>
 ```
 
 ### Sample questions to try
 
-```bash
-# Right to life
-curl -s -X POST http://localhost:8080/api/query \
-  -H "Content-Type: application/json" \
-  -d '{"query": "What does Article 21 say about right to life?"}' | jq .answer
-
-# Freedom of speech
-curl -s -X POST http://localhost:8080/api/query \
-  -H "Content-Type: application/json" \
-  -d '{"query": "What are the restrictions on freedom of speech?"}' | jq .answer
-
-# UPSC exam question style
-curl -s -X POST http://localhost:8080/api/query \
-  -H "Content-Type: application/json" \
-  -d '{"query": "Explain the Directive Principles of State Policy"}' | jq .answer
-
-# Right to equality
-curl -s -X POST http://localhost:8080/api/query \
-  -H "Content-Type: application/json" \
-  -d '{"query": "What is the right to equality under the Constitution?"}' | jq .answer
+```
+>> What are the fundamental rights of a citizen?
+>> What does Article 21 say about right to life?
+>> What are the restrictions on freedom of speech?
+>> Explain the Directive Principles of State Policy
+>> What is the right to equality under the Constitution?
 ```
 
-### Query request body
+Each answer includes cited sources with article numbers and response latency:
 
-```json
-{
-  "query": "What is Article 32?",
-  "collection": "constitution",
-  "top_k": 5,
-  "model": "llama3.2"
-}
 ```
+>> What is Article 32?
 
-| Field | Required | Default | Description |
-|-------|----------|---------|-------------|
-| `query` | yes | — | The legal question |
-| `collection` | no | `constitution` | Qdrant collection to search |
-| `top_k` | no | `5` | Number of chunks to retrieve |
-| `model` | no | `llama3.2` | Ollama model to use for generation |
+Article 32 provides the right to move the Supreme Court for enforcement
+of the fundamental rights conferred by Part III of the Constitution...
 
-### Query response body
+  Sources:
+    [1] Article 32 — Remedies for enforcement of rights (score: 0.91)
+    [2] Article 226 — Power of High Courts to issue certain writs (score: 0.78)
 
-```json
-{
-  "query": "What does Article 21 say?",
-  "answer": "Article 21 guarantees the Protection of life and personal liberty...",
-  "sources": [
-    {
-      "text": "No person shall be deprived of his life or personal liberty...",
-      "article_number": "21",
-      "article_title": "Protection of life and personal liberty",
-      "part": "Part III",
-      "source": "constitution_of_india",
-      "document_type": "constitutional_provision",
-      "score": 0.91
-    }
-  ]
-}
+  (2.4s)
 ```
 
 ---
@@ -234,12 +187,11 @@ Edit `config.json` in the project root to change any default:
 ```json
 {
   "qdrant_host": "localhost",
-  "qdrant_port": 6333,
+  "qdrant_port": 6334,
   "ollama_url": "http://localhost:11434",
   "embed_model": "nomic-embed-text",
   "chat_model": "llama3.2",
   "vector_size": 768,
-  "api_port": 8080,
   "default_top_k": 5,
   "default_collection": "constitution"
 }
@@ -261,10 +213,11 @@ python ingest.py \
   --doc-type penal_code \
   --reset
 
-# 2. Query it by passing the collection name
-curl -X POST http://localhost:8080/api/query \
-  -H "Content-Type: application/json" \
-  -d '{"query": "What is the punishment for theft?", "collection": "ipc"}'
+# 2. Update config.json to point to the new collection
+#    "default_collection": "ipc"
+# 3. Run the CLI
+.\legal-gpt.exe
+>> What is the punishment for theft?
 ```
 
 ---
@@ -274,7 +227,7 @@ curl -X POST http://localhost:8080/api/query \
 ```
 testQdrant/
 ├── config.json          # Runtime config (models, ports)
-├── main.go              # HTTP server — routes & handlers
+├── main.go              # Interactive CLI — REPL loop
 ├── config.go            # Config loader
 ├── ollama.go            # Ollama embed + chat client
 ├── rag.go               # Vector search + RAG prompt builder
@@ -289,31 +242,3 @@ testQdrant/
     ├── pdf_parser.py     # Original constitution parser
     └── requirements.txt
 ```
-
----
-
-## Troubleshooting
-
-**`ollama: connection refused`**
-→ Make sure Ollama is running: `ollama serve`
-
-**`qdrant: connection refused`**
-→ Check Docker container: `docker ps` and `docker start qdrant`
-
-**`ollama returned empty embedding`**
-→ Model not pulled: `ollama pull nomic-embed-text`
-
-**Chunker produces < 10 chunks**
-→ The PDF may use a different format. Try: `python ingest.py --mode pages`
-
-**Build error on `go run .`**
-→ Run `go mod tidy` first to sync dependencies.
-
----
-
-## Roadmap
-
-- [ ] Phase 1 (now): Constitution of India RAG — POC
-- [ ] Phase 2: Add metadata filters (act, section, court), hybrid BM25 + vector retrieval
-- [ ] Phase 3: IPC, CrPC, Evidence Act ingestion
-- [ ] Phase 4: API-first platform with Go + Python SDKs, multilingual support
