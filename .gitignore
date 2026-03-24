@@ -3,3 +3,15 @@
 **/env/**
 **/venv/**
 **.exe
+**/.vscode/**
+**/.idea/**
+**/.pytest_cache/**
+**/.claude/**
+
+# Secrets — never commit
+.env
+config.json
+
+# Build artifacts
+coverage.out
+*.prof

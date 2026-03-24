@@ -1,0 +1,16 @@
+# Ingest pipeline container
+FROM python:3.12-slim
+
+RUN useradd -r -s /bin/false ingest
+
+WORKDIR /app
+
+COPY ingest/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY ingest/ ./ingest/
+COPY scripts/ ./scripts/
+
+USER ingest
+
+ENTRYPOINT ["python", "-m", "ingest.pipeline.run"]

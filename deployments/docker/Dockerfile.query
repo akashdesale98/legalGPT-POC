@@ -1,0 +1,24 @@
+# Multi-stage build for query-service
+# Stage 1: Build
+FROM golang:1.24-alpine AS builder
+
+RUN apk add --no-cache git ca-certificates
+
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /query-service ./services/query/...
+
+# Stage 2: Runtime
+FROM gcr.io/distroless/static-debian12:nonroot
+
+COPY --from=builder /query-service /query-service
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+
+USER nonroot:nonroot
+
+EXPOSE 8080
+
+ENTRYPOINT ["/query-service"]
