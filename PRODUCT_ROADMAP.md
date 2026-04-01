@@ -1,6 +1,24 @@
 # Indian Legal GPT — Product Roadmap
 
-> **Vision:** Build India's most comprehensive, privacy-first legal AI platform that beats global players on India-specific depth and local firms on AI quality.
+> **Vision:** Build India's most comprehensive legal AI platform that beats global players on India-specific depth and pricing, delivered via cloud-hosted SaaS with optional on-premise deployment for enterprises.
+
+---
+
+## Strategy: Cloud-First SaaS with Temporary POC Stack
+
+**Current Phase (POC):** We use Ollama + local Qdrant to validate the RAG architecture and product-market fit at near-zero infrastructure cost.
+
+**Transition Plan:** By end of Phase 1 (Month 3), migrate to cloud infrastructure:
+- **LLM:** Ollama → Claude API / GPT-4 (100x better answer quality, proven for legal reasoning)
+- **Vector DB:** Local Qdrant Docker → Qdrant Cloud (managed, scalable, multi-region)
+- **Infra:** Local VMs → Cloud (AWS/GCP Mumbai) for reliability, compliance, and global reach
+
+**Why this matters:**
+- Ollama is a prototyping tool, not a production system. For a legal AI serving thousands of users, answer quality is non-negotiable.
+- Cloud hosting ensures India data residency (DPDP Act 2023 compliance), SOC 2, and uptime that individual law firms can't achieve on their own.
+- Optional on-prem deployment (Phase 3+) remains available as a $50K+/year premium tier for enterprises with extreme data sensitivity.
+
+**Primary monetization:** Cloud SaaS subscriptions (freemium → pro → enterprise). On-prem is a niche enterprise add-on, not our core business.
 
 ---
 
@@ -43,12 +61,13 @@
 | New criminal codes (BNS/BNSS/BSA) | No | No | Partial | **Yes** |
 | RAG-based AI answers | Yes | Unknown | No | **Yes** |
 | Document drafting | Yes | Yes | No | **Yes** |
-| On-premise / local deployment | No | No | No | **Yes** |
+| Cloud SaaS (multi-tenant) | Yes | Yes | No | **Yes** |
 | Regional language support | No | No | Hindi only | **Yes** |
 | WhatsApp / Telegram bot | No | No | Yes | **Yes** |
 | Workflow agents | Yes | No | No | **Yes** |
 | Affordable for individual lawyers | No | No | Yes | **Yes** |
 | e-Courts integration | No | No | Yes | **Yes** |
+| Optional on-premise (enterprise) | No | No | No | **Yes** |
 
 ---
 
@@ -56,17 +75,19 @@
 
 | Advantage | Why It Matters |
 |---|---|
-| **Privacy-first architecture** | Qdrant + Ollama runs 100% local. No Indian law firm wants client data on US servers. Harvey can never offer this. |
-| **Go + Python stack** | Go for performance-critical API, Python for ML pipeline — the right stack for scale. |
-| **India-native understanding** | Built from India, for India. Harvey is a US company opening a dev office. LawCentral is early. NeuroLaw is generic. |
-| **New criminal code timing** | BNS/BNSS/BSA replaced IPC/CrPC/Evidence Act in 2024. Most lawyers are confused. An AI that deeply understands old-to-new mapping is immediately valuable. |
-| **Existing RAG pipeline** | Article-level chunking, vector embeddings, and cited source retrieval already working — ahead of LawCentral's basic search. |
+| **Deep India-first design** | Every feature, every statute, every judgment selection is built for India. Harvey is global + India; LawCentral and NeuroLaw lack depth. |
+| **Go + Python stack** | Go for high-performance cloud API, Python for ML pipelines and ingest. This is the right architecture for rapid scale. |
+| **Exceptional product timing** | BNS/BNSS/BSA replaced IPC/CrPC/Evidence Act in 2024. 90% of Indian lawyers are still confused. An AI that deeply understands the transition is immediately valuable. |
+| **RAG-first architecture** | Article-level chunking, semantic search, and cited source retrieval built from day one. LawCentral relies on basic search; we deliver reasoning. |
+| **Cloud-native from Phase 1** | Moving to cloud LLMs and managed infrastructure early prevents technical debt. By Phase 3, we'll have proven, scalable cloud infra while on-prem remains an enterprise option. |
 
 ---
 
 ## Phase 1 — Foundation (Months 1-3)
 
-**Goal:** Turn the CLI into a web-accessible product with expanded legal corpus.
+**Goal:** Turn the CLI into a web-accessible product with expanded legal corpus. Initial iteration on Ollama; migrate to cloud LLMs by end of phase.
+
+**Infrastructure Note:** Start with local Ollama for rapid prototyping, then switch to Claude API / GPT-4 by Month 2-3 to ensure production-grade answer quality and scalability.
 
 ### 1.1 Web API Layer
 
@@ -153,12 +174,13 @@
 
 **Goal:** Build capabilities that Harvey can't replicate and LawCentral can't match.
 
-### 3.1 On-Premise / Hybrid Deployment
+### 3.1 On-Premise / Hybrid Deployment (Optional Enterprise Feature)
 
-- [ ] Productize local deployment (Qdrant + Ollama) as a one-click Docker Compose setup
-- [ ] "Law Firm Edition" — runs entirely on firm's own infrastructure
-- [ ] Hybrid mode: local vector DB + cloud LLM (for firms that want better answers but local data)
+- [ ] Productize optional on-premise deployment for enterprise law firms requiring strict data residency
+- [ ] Docker Compose setup for firms that want to self-host (Qdrant + containerized API + cloud LLM calls)
+- [ ] Hybrid mode: on-premise vector DB + embeddings + cloud LLM for reasoning (balances performance + data privacy)
 - [ ] Data residency compliance documentation (India DPDP Act 2023)
+- [ ] **Note:** Primary monetization is cloud SaaS; on-prem is $50K+/year premium tier for enterprises only
 
 ### 3.2 Workflow Agents
 
@@ -200,10 +222,11 @@
 
 ### 4.1 Pricing & Launch
 
-- [ ] **Free tier:** Constitution + BNS basic search (capture individual advocates)
-- [ ] **Pro tier:** Full corpus + drafting + agents (~Rs 999-1999/month)
-- [ ] **Enterprise tier:** On-premise + custom agents + SLA (~Rs 25,000+/month per seat)
+- [ ] **Free tier:** Constitution + BNS basic search (capture individual advocates, no credit card)
+- [ ] **Pro tier** (~Rs 999-1999/month): Full statute corpus + case law search + document drafting + priority support
+- [ ] **Enterprise tier** (~Rs 25,000-50,000/month per 10 seats): Custom workflows + API access + dedicated support + optional on-premise deployment
 - [ ] Launch on Product Hunt, Hacker News, Indian legal forums
+- [ ] **Monetization:** Primary revenue from SaaS subscriptions; API usage fees for integrations; premium enterprise on-prem option
 
 ### 4.2 Law College Partnerships
 
@@ -219,12 +242,14 @@
 - [ ] Legal aid integration (free access for pro-bono cases)
 - [ ] CLE (Continuing Legal Education) credit integration
 
-### 4.4 Cloud-Hosted SaaS
+### 4.4 Cloud Infrastructure & Scale
 
-- [ ] Managed cloud deployment for users who don't want to self-host
-- [ ] Upgrade to cloud LLMs (Claude API / GPT-4) for higher-quality answers
-- [ ] Keep local/on-premise as a parallel offering
-- [ ] SOC 2 and ISO 27001 compliance
+- [ ] Deploy on AWS / GCP with India (Mumbai) as primary region for data residency
+- [ ] Managed Qdrant Cloud for vector DB (auto-scaling, backups, replication)
+- [ ] Claude API / GPT-4 as core LLM (proven quality for legal reasoning)
+- [ ] SOC 2 Type II and ISO 27001 compliance for enterprise trust
+- [ ] Global CDN for fast response times (critical for mobile users)
+- [ ] Cost optimization: usage-based billing aligns infrastructure cost with revenue
 
 ### 4.5 Mobile App
 
@@ -240,16 +265,21 @@
 
 ## Tech Stack Evolution
 
-| Layer | POC (Now) | Phase 1-2 | Phase 3-4 |
+**Strategy:** POC on local stack (Ollama) to validate RAG architecture. Phase 1+ migrates to cloud-first SaaS architecture.
+
+| Layer | POC (Now) | Phase 1-2 (Transition) | Phase 3+ (Production) |
 |---|---|---|---|
-| **LLM** | Ollama (llama3.2, local) | Ollama + cloud fallback | Cloud LLMs (Claude/GPT-4) + local option |
-| **Embeddings** | nomic-embed-text (768d) | multilingual-e5-large | Fine-tuned Indian legal embeddings |
-| **Vector DB** | Qdrant (Docker) | Qdrant (managed) | Qdrant Cloud + local option |
-| **Backend** | Go CLI | Go HTTP API (Gin/Chi) | Go microservices + event bus |
-| **Frontend** | Terminal REPL | Next.js web app | Next.js + React Native mobile |
-| **Ingest** | Python scripts | Python pipeline + scrapers | Airflow/Temporal orchestrated pipelines |
-| **Auth** | None | JWT | OAuth2 + RBAC |
-| **Infra** | Local Docker | Docker Compose | Kubernetes (cloud) + Docker (on-prem) |
+| **LLM** | Ollama llama3.2 (local) | Claude API / GPT-4 (primary) + Ollama fallback | Claude API / GPT-4 (optimized for legal reasoning) |
+| **Embeddings** | nomic-embed-text (768d) | multilingual-e5-large (cloud-hosted) | Fine-tuned legal embeddings (Qdrant or similar) |
+| **Vector DB** | Qdrant Docker (local) | Qdrant Cloud managed service | Qdrant Cloud + multi-region replication |
+| **Backend** | Go CLI (single-threaded) | Go HTTP API (Gin/Chi), cloud-ready | Go microservices (search, draft, agents) + event bus |
+| **Frontend** | Terminal REPL | Next.js web app (Vercel) | Next.js + React Native mobile (self-hosted or Vercel) |
+| **Ingest** | Python scripts (manual runs) | Python pipeline + scheduled jobs | Airflow / Temporal for orchestrated ingestion |
+| **Auth** | None | JWT + basic roles | OAuth2 + RBAC + audit logging |
+| **Infra** | Local Docker VM | Docker Compose / simple VPS | Kubernetes (GCP / AWS) + managed services |
+| **Data Residency** | Local machine | India Cloud (AWS/GCP Mumbai region) | Multi-region with India primary |
+
+**Key transition point:** End of Phase 1 (~Month 3) — move from Ollama to cloud LLMs to ensure production-grade quality and scale.
 
 ---
 
@@ -270,10 +300,12 @@
 
 ## Immediate Next Steps (This Week)
 
-1. Convert Go CLI to HTTP API — wrap existing REPL logic in Gin/Chi HTTP handlers
+1. Convert Go CLI to HTTP API — wrap existing REPL logic in Gin/Chi HTTP handlers (keep Ollama for now)
 2. Ingest BNS PDF — use existing pipeline with `--collection bns`
-3. Build multi-collection search — modify `rag.go` to fan out queries
-4. Spin up basic Next.js frontend — chat interface calling Go API
+3. Build multi-collection search — modify `rag.go` to fan out queries across collections
+4. Set up Claude API integration — add as secondary LLM backend (parallel to Ollama)
+5. Spin up basic Next.js frontend — chat interface calling Go API
+6. Plan cloud LLM migration — identify cost vs. quality trade-offs for Claude vs. GPT-4 by end of Phase 1
 
 ---
 
