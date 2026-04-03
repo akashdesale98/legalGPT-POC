@@ -12,6 +12,9 @@
 .env
 config.json
 
+# Worktrees
+.worktrees/
+
 # Build artifacts
 coverage.out
 *.prof
