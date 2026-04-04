@@ -1,0 +1,57 @@
+name: Evaluation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  evaluate:
+    name: RAGAS Evaluation
+    runs-on: ubuntu-latest
+
+    env:
+      DEV_MODE: "true"
+      DEV_TOKEN: "ci-dev-token"
+      LLM_PROVIDER: "ollama"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install eval dependencies
+        run: pip install -r eval/requirements.txt
+
+      - name: Start infrastructure
+        run: docker compose -f deployments/docker/docker-compose.yml up -d
+
+      - name: Wait for service health
+        run: |
+          echo "Waiting for query service..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/api/v1/health/live > /dev/null 2>&1; then
+              echo "Service is up"
+              break
+            fi
+            echo "Attempt $i/30..."
+            sleep 3
+          done
+
+      - name: Run RAGAS evaluation
+        env:
+          DEV_TOKEN: ${{ env.DEV_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python eval/ragas_eval.py --base-url http://localhost:8080
+
+      - name: Upload evaluation results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results-${{ github.sha }}
+          path: eval/results/
+          retention-days: 30

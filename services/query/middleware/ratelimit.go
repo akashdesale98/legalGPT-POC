@@ -17,11 +17,13 @@ type TierLimits struct {
 }
 
 // DefaultTierLimits returns the default rate limits per tier.
+// Free: 20/hr, Pro: 200/hr, Enterprise: 2000/hr, Admin: 0 (unlimited).
+// TODO: roadmap specifies 15/month for free — align before Phase 2 billing.
 func DefaultTierLimits() TierLimits {
 	return TierLimits{
 		Free:       20,
-		Pro:        500,
-		Enterprise: 0,
+		Pro:        200,
+		Enterprise: 2000,
 	}
 }
 
@@ -68,11 +70,12 @@ func (rl *RateLimiter) evictLoop() {
 	}
 }
 
-// Middleware returns a Gin middleware that enforces per-tier rate limits.
+// Middleware returns a Gin middleware that enforces per-role rate limits.
 func (rl *RateLimiter) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tierVal, _ := c.Get("tier")
-		tier, _ := tierVal.(string)
+		// Auth middleware sets "role"; fall back to "free" if absent.
+		roleVal, _ := c.Get("role")
+		tier, _ := roleVal.(string)
 		if tier == "" {
 			tier = "free"
 		}
@@ -136,6 +139,8 @@ func (rl *RateLimiter) limitForTier(tier string) int {
 		return rl.limits.Pro
 	case "enterprise":
 		return rl.limits.Enterprise
+	case "admin":
+		return 0 // unlimited
 	default:
 		return rl.limits.Free
 	}

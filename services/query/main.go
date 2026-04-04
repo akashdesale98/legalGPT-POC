@@ -13,9 +13,11 @@ import (
 	"github.com/qdrant/go-client/qdrant"
 
 	"testqdrant/internal/config"
+	"testqdrant/internal/db"
 	"testqdrant/internal/llm"
 	"testqdrant/internal/rag"
 	"testqdrant/internal/store"
+	"testqdrant/internal/worker"
 	"testqdrant/services/query/handler"
 	"testqdrant/services/query/middleware"
 )
@@ -29,6 +31,38 @@ func main() {
 	// Graceful shutdown context
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// PostgreSQL (optional in dev mode)
+	var pgRepo *store.PostgresRepo
+	if cfg.PostgresDSN != "" {
+		repo, pgErr := store.NewPostgresRepo(ctx, cfg.PostgresDSN)
+		if pgErr != nil {
+			if cfg.DevMode {
+				log.Printf("WARN: postgres unavailable (dev mode): %v", pgErr)
+			} else {
+				log.Fatalf("postgres: %v", pgErr)
+			}
+		} else {
+			pgRepo = repo
+			defer pgRepo.Close()
+
+			if err := db.RunMigrations(ctx, repo.Pool()); err != nil {
+				log.Fatalf("migrations: %v", err)
+			}
+
+			// Load IPC→BNS mapping
+			mappings, loadErr := db.LoadIPCMappings("scripts/ipc_bns_map.json")
+			if loadErr != nil {
+				log.Printf("WARN: ipc_bns_map not loaded: %v", loadErr)
+			} else if upsertErr := pgRepo.BulkUpsertIPCMapping(ctx, mappings); upsertErr != nil {
+				log.Printf("WARN: ipc_bns_map upsert: %v", upsertErr)
+			}
+		}
+	} else if !cfg.DevMode {
+		log.Fatal("POSTGRES_DSN is required when DEV_MODE=false")
+	} else {
+		log.Println("WARN: POSTGRES_DSN not set — running without persistent storage (dev mode)")
+	}
 
 	// LLM provider via factory
 	provider, err := llm.NewProvider(cfg)
@@ -51,8 +85,14 @@ func main() {
 	guardrail := rag.NewGuardrail()
 	assembler := rag.NewContextAssembler(6000)
 
+	// Worker pool (backpressure)
+	workerPool := worker.NewPool(cfg.WorkerPoolSize)
+
 	// Handlers
 	healthH := &handler.HealthHandler{Store: qdrantStore, Provider: provider}
+	if pgRepo != nil {
+		healthH.DB = pgRepo
+	}
 	searchH := &handler.SearchHandler{Provider: provider, Retriever: retriever, DefaultCollection: cfg.DefaultCollection}
 	chatH := &handler.ChatHandler{
 		Provider:          provider,
@@ -60,11 +100,25 @@ func main() {
 		Guardrail:         guardrail,
 		Assembler:         assembler,
 		DefaultCollection: cfg.DefaultCollection,
+		Pool:              workerPool,
+	}
+	if pgRepo != nil {
+		healthH.Pool = workerPool
+	}
+	adminH := &handler.AdminHandler{}
+	if pgRepo != nil {
+		adminH.DB = pgRepo
 	}
 
 	// Middleware
 	rateLimiter := middleware.NewRateLimiter(middleware.DefaultTierLimits())
-	authCfg := middleware.AuthConfig{DevToken: cfg.DevToken, DevMode: cfg.DevMode}
+	authCfg := middleware.LoadAuthConfig(cfg.DevToken, cfg.DevMode, cfg.JWTPublicKeyPath)
+
+	// Auth token handler (needs private key for issuance)
+	var authH *handler.AuthHandler
+	if cfg.JWTPrivateKeyPath != "" && pgRepo != nil {
+		authH = handler.NewAuthHandler(cfg.JWTPrivateKeyPath, pgRepo)
+	}
 
 	// Gin router
 	router := gin.Default()
@@ -72,6 +126,11 @@ func main() {
 	// Health endpoints (no auth required)
 	router.GET("/api/v1/health/live", healthH.LiveHandler)
 	router.GET("/api/v1/health/ready", healthH.ReadyHandler)
+
+	// Auth endpoint (no auth middleware — issues tokens)
+	if authH != nil {
+		router.POST("/api/v1/auth/token", authH.IssueToken)
+	}
 
 	// API endpoints (auth + rate limiting)
 	api := router.Group("/api/v1")
@@ -81,6 +140,12 @@ func main() {
 		api.POST("/search", searchH.Handle)
 		api.POST("/chat", chatH.Handle)
 	}
+
+	// Admin endpoints (auth + role check)
+	admin := router.Group("/api/v1/admin")
+	admin.Use(middleware.Auth(authCfg))
+	admin.Use(middleware.RequireRole("admin"))
+	admin.GET("/routing-stats", adminH.RoutingStats)
 
 	// HTTP server with graceful shutdown
 	addr := fmt.Sprintf(":%d", cfg.APIPort)

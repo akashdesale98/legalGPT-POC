@@ -106,6 +106,99 @@ func (s *QdrantStore) Search(ctx context.Context, vector []float32, opts SearchO
 	return chunks, nil
 }
 
+// SearchHybrid performs dense + BM25 sparse hybrid search with RRF fusion.
+// Falls back to dense-only Search if sparseIndices is empty.
+func (s *QdrantStore) SearchHybrid(
+	ctx context.Context,
+	denseVec []float32,
+	sparseIndices []uint32,
+	sparseValues []float32,
+	opts SearchOptions,
+) ([]Chunk, error) {
+	// Graceful degradation: no sparse vector → dense-only
+	if len(sparseIndices) == 0 {
+		return s.Search(ctx, denseVec, opts)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, QdrantSearchTimeout)
+	defer cancel()
+
+	topK := opts.TopK
+	if topK <= 0 {
+		topK = 5
+	}
+	prefetchLimit := uint64(20)
+
+	// Tenant isolation filter (same logic as Search)
+	filter := &qdrant.Filter{
+		Should: []*qdrant.Condition{
+			qdrant.NewMatch("tenant_id", "public"),
+		},
+	}
+	if opts.TenantID != "" && opts.TenantID != "public" {
+		filter.Should = append(filter.Should, qdrant.NewMatch("tenant_id", opts.TenantID))
+	}
+	if len(opts.Filters) > 0 {
+		must := make([]*qdrant.Condition, 0, len(opts.Filters))
+		for k, v := range opts.Filters {
+			must = append(must, qdrant.NewMatch(k, v))
+		}
+		filter.Must = must
+	}
+
+	// Two prefetch legs: dense ANN + sparse BM25, fused with RRF
+	points, err := s.Client.Query(ctx, &qdrant.QueryPoints{
+		CollectionName: opts.Collection,
+		Prefetch: []*qdrant.PrefetchQuery{
+			{
+				Query:  qdrant.NewQuery(denseVec...),
+				Using:  qdrant.PtrOf("dense"),
+				Limit:  qdrant.PtrOf(prefetchLimit),
+				Filter: filter,
+			},
+			{
+				Query:  qdrant.NewQuerySparse(sparseIndices, sparseValues),
+				Using:  qdrant.PtrOf("bm25"),
+				Limit:  qdrant.PtrOf(prefetchLimit),
+				Filter: filter,
+			},
+		},
+		Query:       qdrant.NewQueryFusion(qdrant.Fusion_RRF),
+		WithPayload: qdrant.NewWithPayload(true),
+		Limit:       qdrant.PtrOf(uint64(topK)),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("qdrant hybrid query: %w", err)
+	}
+
+	chunks := make([]Chunk, 0, len(points))
+	for _, p := range points {
+		chunk := Chunk{
+			Score:    p.Score,
+			Metadata: make(map[string]string),
+		}
+		for key, val := range p.Payload {
+			strVal := val.GetStringValue()
+			switch key {
+			case "text":
+				chunk.Text = strVal
+			case "content_hash":
+				chunk.ContentHash = strVal
+			case "superseded_by":
+				chunk.SupersededBy = strVal
+			case "effective_date":
+				chunk.EffectiveDate = strVal
+			default:
+				if strVal != "" {
+					chunk.Metadata[key] = strVal
+				}
+			}
+		}
+		chunks = append(chunks, chunk)
+	}
+	return chunks, nil
+}
+
 // SearchMulti fans out searches across multiple collections in parallel.
 func (s *QdrantStore) SearchMulti(ctx context.Context, vector []float32, collections []string, opts SearchOptions) ([]Chunk, error) {
 	var (

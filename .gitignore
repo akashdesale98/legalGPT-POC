@@ -11,6 +11,7 @@
 # Secrets — never commit
 .env
 config.json
+keys/
 
 # Worktrees
 .worktrees/
