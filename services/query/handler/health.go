@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -9,10 +10,24 @@ import (
 	"testqdrant/internal/store"
 )
 
+// DBPinger is satisfied by *store.PostgresRepo.
+type DBPinger interface {
+	Ping(ctx context.Context) error
+}
+
+// WorkerPoolStats is the subset of worker.Pool used by HealthHandler.
+// Defined as an interface to avoid import cycles.
+type WorkerPoolStats interface {
+	ActiveWorkers() int
+	Capacity() int
+}
+
 // HealthHandler handles liveness and readiness probes.
 type HealthHandler struct {
 	Store    store.VectorStore
 	Provider llm.LLMProvider
+	DB       DBPinger    // optional; nil when Postgres is not configured
+	Pool     WorkerPoolStats // optional; nil when worker pool is not configured
 }
 
 // LiveHandler returns 200 if the process is running.
@@ -42,5 +57,17 @@ func (h *HealthHandler) ReadyHandler(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"status": "ready"})
+	resp := gin.H{"status": "ready", "qdrant": "ok", "llm": "ok"}
+
+	if h.DB != nil {
+		if err := h.DB.Ping(ctx); err != nil {
+			resp["postgres"] = "unavailable"
+		} else {
+			resp["postgres"] = "ok"
+		}
+	} else {
+		resp["postgres"] = "unavailable"
+	}
+
+	c.JSON(http.StatusOK, resp)
 }

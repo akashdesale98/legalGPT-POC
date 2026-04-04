@@ -29,6 +29,11 @@ type Config struct {
 	DevMode           bool
 	LogLevel          string
 	OTELEndpoint      string
+	PostgresDSN       string // env: POSTGRES_DSN
+	WorkerPoolSize    int    // env: WORKER_POOL_SIZE
+	LLMRouteThreshold int    // env: LLM_ROUTE_THRESHOLD
+	JWTPublicKeyPath  string // env: JWT_PUBLIC_KEY_PATH
+	JWTPrivateKeyPath string // env: JWT_PRIVATE_KEY_PATH
 }
 
 // LoadConfig reads configuration from environment variables.
@@ -55,6 +60,11 @@ func LoadConfig() Config {
 		DevMode:           os.Getenv("DEV_MODE") == "true",
 		LogLevel:          envOrDefault("LOG_LEVEL", "info"),
 		OTELEndpoint:      os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+		PostgresDSN:       os.Getenv("POSTGRES_DSN"),
+		WorkerPoolSize:    envIntOrDefault("WORKER_POOL_SIZE", 50),
+		LLMRouteThreshold: envIntOrDefault("LLM_ROUTE_THRESHOLD", 500),
+		JWTPublicKeyPath:  os.Getenv("JWT_PUBLIC_KEY_PATH"),
+		JWTPrivateKeyPath: os.Getenv("JWT_PRIVATE_KEY_PATH"),
 	}
 	return cfg
 }
@@ -75,8 +85,10 @@ func (c *Config) Validate() error {
 		if c.GeminiAPIKey == "" {
 			return fmt.Errorf("GEMINI_API_KEY is required when LLM_PROVIDER=gemini")
 		}
+	case "router":
+		// Router requires at least one of Gemini or Claude keys; validated in factory.
 	default:
-		return fmt.Errorf("unknown LLM_PROVIDER: %q (valid: ollama, claude, gemini)", c.LLMProvider)
+		return fmt.Errorf("unknown LLM_PROVIDER: %q (valid: ollama, claude, gemini, router)", c.LLMProvider)
 	}
 
 	if c.DevToken != "" {

@@ -7,13 +7,16 @@ Added: retry on connection error, batch size 100, collection creation if not exi
 
 import time
 import uuid
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
     VectorParams,
+    SparseVectorParams,
+    SparseIndexParams,
     PointStruct,
+    SparseVector,
 )
 
 from ingest.chunker.statute import Chunk
@@ -21,6 +24,7 @@ from ingest.chunker.statute import Chunk
 
 BATCH_SIZE = 100
 MAX_RETRIES = 3
+SPARSE_VECTOR_NAME = "bm25"
 
 
 class QdrantLoader:
@@ -43,7 +47,7 @@ class QdrantLoader:
         self.vector_size = vector_size
         self.distance = distance
 
-    def ensure_collection(self, reset: bool = False):
+    def ensure_collection(self, reset: bool = False, with_sparse: bool = True):
         """Create the collection if it doesn't exist. If reset=True, drop and recreate."""
         exists = any(
             c.name == self.collection
@@ -56,19 +60,36 @@ class QdrantLoader:
             exists = False
 
         if not exists:
-            print(f"[loader] Creating collection '{self.collection}' (size={self.vector_size}) …")
+            print(f"[loader] Creating collection '{self.collection}' (size={self.vector_size}, sparse={with_sparse}) …")
+            sparse_vectors_config = None
+            if with_sparse:
+                sparse_vectors_config = {
+                    SPARSE_VECTOR_NAME: SparseVectorParams(
+                        index=SparseIndexParams(on_disk=False)
+                    )
+                }
             self.client.create_collection(
                 collection_name=self.collection,
-                vectors_config=VectorParams(
+                vectors_config={"dense": VectorParams(
                     size=self.vector_size,
                     distance=self.distance,
-                ),
+                )},
+                sparse_vectors_config=sparse_vectors_config,
             )
         else:
             print(f"[loader] Collection '{self.collection}' already exists — appending.")
 
-    def load(self, chunks: List[Chunk], embeddings: List[List[float]]):
-        """Upsert all (chunk, embedding) pairs with retry logic."""
+    def load(
+        self,
+        chunks: List[Chunk],
+        embeddings: List[List[float]],
+        sparse_vectors: Optional[List[Tuple[List[int], List[float]]]] = None,
+    ):
+        """Upsert all (chunk, embedding) pairs with retry logic.
+
+        sparse_vectors: optional list of (indices, values) per chunk.
+        If provided, stored as the 'bm25' sparse vector field.
+        """
         if len(chunks) != len(embeddings):
             raise ValueError(f"chunks ({len(chunks)}) and embeddings ({len(embeddings)}) must have the same length")
 
@@ -79,8 +100,13 @@ class QdrantLoader:
             batch_chunks = chunks[start: start + BATCH_SIZE]
             batch_vecs = embeddings[start: start + BATCH_SIZE]
 
+            batch_sparse = (
+                sparse_vectors[start: start + BATCH_SIZE]
+                if sparse_vectors else None
+            )
+
             points = []
-            for chunk, vec in zip(batch_chunks, batch_vecs):
+            for i, (chunk, vec) in enumerate(zip(batch_chunks, batch_vecs)):
                 # Use content hash as point ID for idempotent upsert
                 point_id = chunk.metadata.get("content_hash", "")
                 if point_id:
@@ -89,9 +115,17 @@ class QdrantLoader:
                 else:
                     point_id = str(uuid.uuid4())
 
+                vectors: dict = {"dense": vec}
+                if batch_sparse and i < len(batch_sparse):
+                    sp_indices, sp_values = batch_sparse[i]
+                    if sp_indices:
+                        vectors[SPARSE_VECTOR_NAME] = SparseVector(
+                            indices=sp_indices, values=sp_values
+                        )
+
                 points.append(PointStruct(
                     id=point_id,
-                    vector=vec,
+                    vector=vectors,
                     payload={**chunk.metadata, "text": chunk.text},
                 ))
 

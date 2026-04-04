@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +19,13 @@ import (
 
 const maxQueryLen = 2000
 
+// WorkerPool is the subset of worker.Pool used by ChatHandler.
+// Defined as an interface to avoid import cycles and ease testing.
+type WorkerPool interface {
+	Acquire(ctx context.Context) error
+	Release()
+}
+
 // ChatHandler handles SSE streaming chat requests.
 type ChatHandler struct {
 	Provider          llm.LLMProvider
@@ -25,6 +33,7 @@ type ChatHandler struct {
 	Guardrail         *rag.Guardrail
 	Assembler         *rag.ContextAssembler
 	DefaultCollection string
+	Pool              WorkerPool // may be nil in tests
 }
 
 // ChatRequest is the JSON body for POST /api/v1/chat.
@@ -52,6 +61,18 @@ func (h *ChatHandler) Handle(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
+
+	// 2. Acquire worker pool slot (backpressure)
+	if h.Pool != nil {
+		if err := h.Pool.Acquire(ctx); err != nil {
+			c.JSON(http.StatusTooManyRequests, gin.H{
+				"error": "server busy",
+			})
+			c.Header("Retry-After", "5")
+			return
+		}
+		defer h.Pool.Release()
+	}
 	start := time.Now()
 
 	tenantID, _ := c.Get("tenant_id")
@@ -114,23 +135,36 @@ func (h *ChatHandler) Handle(c *gin.Context) {
 		return
 	}
 
-	// 7. Forward stream chunks as SSE events
+	// 7. Forward stream chunks as SSE events — check ctx.Done() between chunks
 	var totalOutput int
-	for chunk := range stream {
-		if chunk.Error != nil {
-			writeSSEError(c.Writer, "stream_error", chunk.Error.Error())
+	chunksSent := 0
+	queryHashForLog, _ := c.Get("query_hash") // may be empty, that's fine
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("SSE: client_disconnected query_hash=%v chunks_sent=%d", queryHashForLog, chunksSent)
 			return
+		case chunk, ok := <-stream:
+			if !ok {
+				goto done
+			}
+			if chunk.Error != nil {
+				writeSSEError(c.Writer, "stream_error", chunk.Error.Error())
+				return
+			}
+			if chunk.Done {
+				goto done
+			}
+			writeSSEEvent(c.Writer, "chunk", map[string]any{
+				"delta": chunk.Text,
+				"done":  false,
+			})
+			totalOutput += len(chunk.Text)
+			chunksSent++
+			c.Writer.Flush()
 		}
-		if chunk.Done {
-			break
-		}
-		writeSSEEvent(c.Writer, "chunk", map[string]any{
-			"delta": chunk.Text,
-			"done":  false,
-		})
-		totalOutput += len(chunk.Text)
-		c.Writer.Flush()
 	}
+done:
 
 	// 8. Send sources event
 	citations := make([]map[string]any, 0, len(ctxWindow.Chunks))
