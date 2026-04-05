@@ -12,7 +12,9 @@ BEGIN
         WHERE tablename = 'users' AND policyname = 'tenant_isolation'
     ) THEN
         CREATE POLICY tenant_isolation ON users
-            USING (tenant_id = current_setting('app.tenant_id', true)::uuid);
+            FOR ALL
+            USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
+            WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
     END IF;
 END;
 $$;
@@ -24,10 +26,13 @@ BEGIN
         WHERE tablename = 'query_history' AND policyname = 'tenant_isolation'
     ) THEN
         CREATE POLICY tenant_isolation ON query_history
-            USING (tenant_id = current_setting('app.tenant_id', true)::uuid);
+            FOR ALL
+            USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
+            WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
     END IF;
 END;
 $$;
 
 CREATE INDEX IF NOT EXISTS idx_users_tenant_email ON users(tenant_id, email);
+CREATE INDEX IF NOT EXISTS idx_users_hashed_token ON users(hashed_token);
 CREATE INDEX IF NOT EXISTS idx_qh_tenant_time     ON query_history(tenant_id, created_at DESC);

@@ -51,7 +51,7 @@ type claudeStreamEvent struct {
 	Delta struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
-	} `json:"delta,omitzero"`
+	} `json:"delta"`
 }
 
 type claudeErrorResponse struct {

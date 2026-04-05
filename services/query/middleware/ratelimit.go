@@ -33,40 +33,53 @@ type RateLimiter struct {
 	limits  TierLimits
 	mu      sync.Mutex
 	windows map[string][]time.Time
+	stop    chan struct{}
 }
 
 // NewRateLimiter creates a rate limiter with the given tier limits.
 // Starts a background goroutine to evict stale entries every 10 minutes.
+// Call Close() on shutdown to stop the background goroutine.
 func NewRateLimiter(limits TierLimits) *RateLimiter {
 	rl := &RateLimiter{
 		limits:  limits,
 		windows: make(map[string][]time.Time),
+		stop:    make(chan struct{}),
 	}
 	go rl.evictLoop()
 	return rl
+}
+
+// Close stops the background eviction goroutine.
+func (rl *RateLimiter) Close() {
+	close(rl.stop)
 }
 
 // evictLoop periodically removes entries with no recent requests.
 func (rl *RateLimiter) evictLoop() {
 	ticker := time.NewTicker(10 * time.Minute)
 	defer ticker.Stop()
-	for range ticker.C {
-		rl.mu.Lock()
-		cutoff := time.Now().Add(-1 * time.Hour)
-		for key, entries := range rl.windows {
-			valid := entries[:0]
-			for _, t := range entries {
-				if t.After(cutoff) {
-					valid = append(valid, t)
+	for {
+		select {
+		case <-ticker.C:
+			rl.mu.Lock()
+			cutoff := time.Now().Add(-1 * time.Hour)
+			for key, entries := range rl.windows {
+				valid := entries[:0]
+				for _, t := range entries {
+					if t.After(cutoff) {
+						valid = append(valid, t)
+					}
+				}
+				if len(valid) == 0 {
+					delete(rl.windows, key)
+				} else {
+					rl.windows[key] = valid
 				}
 			}
-			if len(valid) == 0 {
-				delete(rl.windows, key)
-			} else {
-				rl.windows[key] = valid
-			}
+			rl.mu.Unlock()
+		case <-rl.stop:
+			return
 		}
-		rl.mu.Unlock()
 	}
 }
 

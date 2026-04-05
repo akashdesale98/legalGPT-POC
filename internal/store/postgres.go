@@ -193,7 +193,7 @@ func (r *PostgresRepo) GetQueryHistory(ctx context.Context, tenantID string, lim
 	}
 	defer rows.Close()
 
-	var entries []QueryHistoryEntry
+	entries := make([]QueryHistoryEntry, 0)
 	for rows.Next() {
 		var e QueryHistoryEntry
 		if err := rows.Scan(
@@ -205,14 +205,23 @@ func (r *PostgresRepo) GetQueryHistory(ctx context.Context, tenantID string, lim
 		}
 		entries = append(entries, e)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: GetQueryHistory iteration: %w", err)
+	}
 	log.Printf("DB: GetQueryHistory duration_ms=%d count=%d", time.Since(start).Milliseconds(), len(entries))
 	return entries, nil
 }
 
-// BulkUpsertIPCMapping inserts or updates IPC→BNS mappings.
+// BulkUpsertIPCMapping inserts or updates IPC→BNS mappings within a single transaction.
 // ON CONFLICT updates bns_section to keep data fresh on re-ingest.
 func (r *PostgresRepo) BulkUpsertIPCMapping(ctx context.Context, mappings []IPCBNSMapping) error {
 	start := time.Now()
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("postgres: BulkUpsertIPCMapping begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // rollback after commit is harmless
 
 	const q = `
 		INSERT INTO ipc_bns_map (ipc_section, bns_section, description, effective_date)
@@ -228,9 +237,13 @@ func (r *PostgresRepo) BulkUpsertIPCMapping(ctx context.Context, mappings []IPCB
 		if m.EffectiveDate != "" {
 			effDate = &m.EffectiveDate
 		}
-		if _, err := r.pool.Exec(ctx, q, m.IPCSection, m.BNSSection, m.Description, effDate); err != nil {
+		if _, err := tx.Exec(ctx, q, m.IPCSection, m.BNSSection, m.Description, effDate); err != nil {
 			return fmt.Errorf("postgres: BulkUpsertIPCMapping ipc=%s: %w", m.IPCSection, err)
 		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("postgres: BulkUpsertIPCMapping commit: %w", err)
 	}
 	log.Printf("DB: ipc_bns_map loaded count=%d duration_ms=%d", len(mappings), time.Since(start).Milliseconds())
 	return nil

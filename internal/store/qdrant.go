@@ -78,6 +78,11 @@ func (s *QdrantStore) Search(ctx context.Context, vector []float32, opts SearchO
 		return nil, fmt.Errorf("qdrant query: %w", err)
 	}
 
+	return pointsToChunks(points), nil
+}
+
+// pointsToChunks converts Qdrant scored points into Chunk structs.
+func pointsToChunks(points []*qdrant.ScoredPoint) []Chunk {
 	chunks := make([]Chunk, 0, len(points))
 	for _, p := range points {
 		chunk := Chunk{
@@ -103,7 +108,7 @@ func (s *QdrantStore) Search(ctx context.Context, vector []float32, opts SearchO
 		}
 		chunks = append(chunks, chunk)
 	}
-	return chunks, nil
+	return chunks
 }
 
 // SearchHybrid performs dense + BM25 sparse hybrid search with RRF fusion.
@@ -171,32 +176,7 @@ func (s *QdrantStore) SearchHybrid(
 		return nil, fmt.Errorf("qdrant hybrid query: %w", err)
 	}
 
-	chunks := make([]Chunk, 0, len(points))
-	for _, p := range points {
-		chunk := Chunk{
-			Score:    p.Score,
-			Metadata: make(map[string]string),
-		}
-		for key, val := range p.Payload {
-			strVal := val.GetStringValue()
-			switch key {
-			case "text":
-				chunk.Text = strVal
-			case "content_hash":
-				chunk.ContentHash = strVal
-			case "superseded_by":
-				chunk.SupersededBy = strVal
-			case "effective_date":
-				chunk.EffectiveDate = strVal
-			default:
-				if strVal != "" {
-					chunk.Metadata[key] = strVal
-				}
-			}
-		}
-		chunks = append(chunks, chunk)
-	}
-	return chunks, nil
+	return pointsToChunks(points), nil
 }
 
 // SearchMulti fans out searches across multiple collections in parallel.

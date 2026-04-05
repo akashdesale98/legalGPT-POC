@@ -112,6 +112,7 @@ func main() {
 
 	// Middleware
 	rateLimiter := middleware.NewRateLimiter(middleware.DefaultTierLimits())
+	defer rateLimiter.Close()
 	authCfg := middleware.LoadAuthConfig(cfg.DevToken, cfg.DevMode, cfg.JWTPublicKeyPath)
 
 	// Auth token handler (needs private key for issuance)

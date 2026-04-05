@@ -65,10 +65,10 @@ func (h *ChatHandler) Handle(c *gin.Context) {
 	// 2. Acquire worker pool slot (backpressure)
 	if h.Pool != nil {
 		if err := h.Pool.Acquire(ctx); err != nil {
+			c.Header("Retry-After", "5")
 			c.JSON(http.StatusTooManyRequests, gin.H{
 				"error": "server busy",
 			})
-			c.Header("Retry-After", "5")
 			return
 		}
 		defer h.Pool.Release()
