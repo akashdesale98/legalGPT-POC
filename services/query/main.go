@@ -34,6 +34,7 @@ func main() {
 
 	// PostgreSQL (optional in dev mode)
 	var pgRepo *store.PostgresRepo
+	var ipcMappings []store.IPCBNSMapping
 	if cfg.PostgresDSN != "" {
 		repo, pgErr := store.NewPostgresRepo(ctx, cfg.PostgresDSN)
 		if pgErr != nil {
@@ -54,14 +55,21 @@ func main() {
 			mappings, loadErr := db.LoadIPCMappings("scripts/ipc_bns_map.json")
 			if loadErr != nil {
 				log.Printf("WARN: ipc_bns_map not loaded: %v", loadErr)
-			} else if upsertErr := pgRepo.BulkUpsertIPCMapping(ctx, mappings); upsertErr != nil {
-				log.Printf("WARN: ipc_bns_map upsert: %v", upsertErr)
+			} else {
+				if upsertErr := pgRepo.BulkUpsertIPCMapping(ctx, mappings); upsertErr != nil {
+					log.Printf("WARN: ipc_bns_map upsert: %v", upsertErr)
+				}
+				ipcMappings = mappings
 			}
 		}
 	} else if !cfg.DevMode {
 		log.Fatal("POSTGRES_DSN is required when DEV_MODE=false")
 	} else {
 		log.Println("WARN: POSTGRES_DSN not set — running without persistent storage (dev mode)")
+		// Still load IPC mappings from JSON for intent detection in dev mode
+		if mappings, err := db.LoadIPCMappings("scripts/ipc_bns_map.json"); err == nil {
+			ipcMappings = mappings
+		}
 	}
 
 	// LLM provider via factory
@@ -85,6 +93,28 @@ func main() {
 	guardrail := rag.NewGuardrail()
 	assembler := rag.NewContextAssembler(6000)
 
+	// Cross-encoder reranker (optional)
+	switch cfg.RerankProvider {
+	case "cohere":
+		if cfg.CohereAPIKey != "" {
+			retriever.SetReranker(rag.NewCohereReranker(cfg.CohereAPIKey, cfg.RerankModel))
+			log.Printf("RERANK: provider=cohere model=%s", cfg.RerankModel)
+		} else {
+			log.Println("WARN: RERANK_PROVIDER=cohere but COHERE_API_KEY not set — reranking disabled")
+		}
+	case "local":
+		model := cfg.RerankModel
+		if model == "" {
+			model = "bge-reranker-v2-m3"
+		}
+		retriever.SetReranker(rag.NewLocalReranker(cfg.OllamaURL, model))
+		log.Printf("RERANK: provider=local model=%s url=%s", model, cfg.OllamaURL)
+	case "":
+		log.Println("RERANK: disabled (set RERANK_PROVIDER to enable)")
+	default:
+		log.Printf("WARN: unknown RERANK_PROVIDER=%q — reranking disabled", cfg.RerankProvider)
+	}
+
 	// Worker pool (backpressure)
 	workerPool := worker.NewPool(cfg.WorkerPoolSize)
 
@@ -94,11 +124,19 @@ func main() {
 		healthH.DB = pgRepo
 	}
 	searchH := &handler.SearchHandler{Provider: provider, Retriever: retriever, DefaultCollection: cfg.DefaultCollection}
+	// IPC→BNS intent detector (requires loaded mappings)
+	var ipcDetector *rag.IPCDetector
+	if len(ipcMappings) > 0 {
+		ipcDetector = rag.NewIPCDetector(ipcMappings)
+		log.Printf("IPC_DETECT: loaded %d IPC→BNS mappings", len(ipcMappings))
+	}
+
 	chatH := &handler.ChatHandler{
 		Provider:          provider,
 		Retriever:         retriever,
 		Guardrail:         guardrail,
 		Assembler:         assembler,
+		IPCDetector:       ipcDetector,
 		DefaultCollection: cfg.DefaultCollection,
 		Pool:              workerPool,
 	}

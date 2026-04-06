@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -210,6 +211,95 @@ func (r *PostgresRepo) GetQueryHistory(ctx context.Context, tenantID string, lim
 	}
 	log.Printf("DB: GetQueryHistory duration_ms=%d count=%d", time.Since(start).Milliseconds(), len(entries))
 	return entries, nil
+}
+
+// WithTenant executes fn inside a transaction with RLS tenant isolation enabled.
+// It sets the app.tenant_id session variable via SET LOCAL so that PostgreSQL
+// RLS policies restrict all queries within fn to the given tenant.
+func (r *PostgresRepo) WithTenant(ctx context.Context, tenantID string, fn func(tx pgx.Tx) error) error {
+	start := time.Now()
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("postgres: WithTenant begin: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // rollback after commit is harmless
+
+	// SET LOCAL scopes the variable to this transaction only.
+	if _, err := tx.Exec(ctx, "SET LOCAL app.tenant_id = $1", tenantID); err != nil {
+		return fmt.Errorf("postgres: WithTenant set tenant_id: %w", err)
+	}
+
+	if err := fn(tx); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("postgres: WithTenant commit: %w", err)
+	}
+	log.Printf("DB: WithTenant duration_ms=%d tenant=%s", time.Since(start).Milliseconds(), tenantID)
+	return nil
+}
+
+// LogQueryTenant inserts a query history record within a tenant-scoped transaction.
+// This ensures RLS policies are active during the write.
+func (r *PostgresRepo) LogQueryTenant(ctx context.Context, entry QueryHistoryEntry) error {
+	return r.WithTenant(ctx, entry.TenantID, func(tx pgx.Tx) error {
+		var userID *string
+		if entry.UserID != "" {
+			userID = &entry.UserID
+		}
+
+		const q = `
+			INSERT INTO query_history
+				(tenant_id, user_id, query_hash, response_text, provider_used,
+				 tokens_in, tokens_out, latency_ms, faithfulness_score)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
+
+		_, err := tx.Exec(ctx, q,
+			entry.TenantID, userID, entry.QueryHash, entry.ResponseText,
+			entry.ProviderUsed, entry.TokensIn, entry.TokensOut,
+			entry.LatencyMs, entry.FaithfulnessScore,
+		)
+		return err
+	})
+}
+
+// GetQueryHistoryTenant returns query history within a tenant-scoped transaction.
+// RLS policies are active — only rows for the given tenant are visible.
+func (r *PostgresRepo) GetQueryHistoryTenant(ctx context.Context, tenantID string, limit int) ([]QueryHistoryEntry, error) {
+	var entries []QueryHistoryEntry
+	err := r.WithTenant(ctx, tenantID, func(tx pgx.Tx) error {
+		const q = `
+			SELECT tenant_id, COALESCE(user_id::text, ''), query_hash,
+			       COALESCE(response_text, ''), COALESCE(provider_used, ''),
+			       COALESCE(tokens_in, 0), COALESCE(tokens_out, 0),
+			       COALESCE(latency_ms, 0), COALESCE(faithfulness_score, 0)
+			FROM query_history
+			ORDER BY created_at DESC
+			LIMIT $1`
+
+		rows, err := tx.Query(ctx, q, limit)
+		if err != nil {
+			return fmt.Errorf("query: %w", err)
+		}
+		defer rows.Close()
+
+		entries = make([]QueryHistoryEntry, 0)
+		for rows.Next() {
+			var e QueryHistoryEntry
+			if err := rows.Scan(
+				&e.TenantID, &e.UserID, &e.QueryHash, &e.ResponseText,
+				&e.ProviderUsed, &e.TokensIn, &e.TokensOut,
+				&e.LatencyMs, &e.FaithfulnessScore,
+			); err != nil {
+				return fmt.Errorf("scan: %w", err)
+			}
+			entries = append(entries, e)
+		}
+		return rows.Err()
+	})
+	return entries, err
 }
 
 // BulkUpsertIPCMapping inserts or updates IPC→BNS mappings within a single transaction.

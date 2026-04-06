@@ -34,6 +34,9 @@ type Config struct {
 	LLMRouteThreshold int    // env: LLM_ROUTE_THRESHOLD
 	JWTPublicKeyPath  string // env: JWT_PUBLIC_KEY_PATH
 	JWTPrivateKeyPath string // env: JWT_PRIVATE_KEY_PATH
+	CohereAPIKey      string // env: COHERE_API_KEY
+	RerankProvider    string // env: RERANK_PROVIDER — "cohere", "local", or "" (disabled)
+	RerankModel       string // env: RERANK_MODEL
 }
 
 // LoadConfig reads configuration from environment variables.
@@ -65,6 +68,9 @@ func LoadConfig() Config {
 		LLMRouteThreshold: envIntOrDefault("LLM_ROUTE_THRESHOLD", 500),
 		JWTPublicKeyPath:  os.Getenv("JWT_PUBLIC_KEY_PATH"),
 		JWTPrivateKeyPath: os.Getenv("JWT_PRIVATE_KEY_PATH"),
+		CohereAPIKey:      os.Getenv("COHERE_API_KEY"),
+		RerankProvider:    os.Getenv("RERANK_PROVIDER"),
+		RerankModel:       os.Getenv("RERANK_MODEL"),
 	}
 	return cfg
 }

@@ -32,6 +32,7 @@ type ChatHandler struct {
 	Retriever         *rag.HybridRetriever
 	Guardrail         *rag.Guardrail
 	Assembler         *rag.ContextAssembler
+	IPCDetector       *rag.IPCDetector // optional; enriches prompts with IPC→BNS mappings
 	DefaultCollection string
 	Pool              WorkerPool // may be nil in tests
 }
@@ -127,8 +128,8 @@ func (h *ChatHandler) Handle(c *gin.Context) {
 	// 5. Assemble context
 	ctxWindow := h.Assembler.BuildContext(chunks)
 
-	// 6. Build messages and stream
-	messages := rag.BuildMessages(query, ctxWindow)
+	// 6. Build messages and stream (with optional IPC→BNS enrichment)
+	messages := rag.BuildMessages(query, ctxWindow, h.IPCDetector)
 	stream, err := h.Provider.Stream(ctx, llm.CompletionRequest{Messages: messages})
 	if err != nil {
 		writeSSEError(c.Writer, "llm_failed", err.Error())
