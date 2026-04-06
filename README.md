@@ -1,223 +1,188 @@
 # Indian Legal GPT — POC
 
-A RAG-based legal AI system for Indian law, starting with the **Constitution of India**.
-Built with Qdrant (vector DB), Ollama (local LLM), Go (interactive CLI), and Python (ingest pipeline).
+RAG-powered legal AI for Indian law — BNS, BNSS, BSA, and the Constitution of India.
+
+Built with Go (HTTP service), Python (ingest pipeline), Qdrant (vector DB), and pluggable LLM providers (Ollama, Claude, Gemini).
 
 ---
 
 ## Architecture
 
 ```
-constitution.pdf
-      │
-      ▼
-[Python Ingest Pipeline]
-  chunker.py       →  Article-level chunks + metadata
-  embedder.py      →  Ollama nomic-embed-text embeddings
-  qdrant_loader.py →  Upsert into Qdrant collection
-      │
-      ▼
-[Qdrant Vector DB]  (localhost:6333 REST / 6334 gRPC)
-      │
-      ▼
-[Go Interactive CLI]
-  >> user question  →  embed query → search Qdrant → call Ollama → print answer + sources
-      │
-      ▼
-[Ollama LLM]        (localhost:11434)
-  nomic-embed-text  →  embeddings
-  llama3.2          →  answer generation
+                         ┌──────────────────────────┐
+                         │     Python Ingest CLI     │
+                         │  chunker → embedder →     │
+                         │  sparse encoder → loader  │
+                         └────────────┬─────────────┘
+                                      │ upsert (dense + sparse vectors)
+                                      ▼
+┌──────────┐   POST /chat   ┌─────────────────────────────────────────┐
+│  Client  │ ◄──── SSE ──── │          Go Query Service (Gin)         │
+└──────────┘                │                                         │
+                            │  Auth (RS256 JWT) → Rate Limiter        │
+                            │  → Worker Pool → Guardrail              │
+                            │  → Embed → Hybrid Retriever (RRF)       │
+                            │  → Reranker → Context Assembler         │
+                            │  → IPC Detector → LLM Router → Stream   │
+                            └──────┬──────────┬──────────┬────────────┘
+                                   │          │          │
+                              ┌────▼───┐ ┌────▼───┐ ┌────▼──────┐
+                              │ Qdrant │ │Postgres│ │ LLM (any) │
+                              │ (gRPC) │ │ (pgx)  │ │Ollama/    │
+                              │        │ │  RLS   │ │Claude/    │
+                              └────────┘ └────────┘ │Gemini     │
+                                                    └───────────┘
 ```
+
+---
+
+## Features (Phase 1)
+
+- **Hybrid retrieval** — Dense (Qdrant ANN) + BM25 sparse vectors with Reciprocal Rank Fusion
+- **Cross-encoder reranking** — Cohere Rerank API or local Ollama-hosted model (optional)
+- **LLM complexity router** — Routes simple queries to Gemini, complex queries to Claude
+- **IPC intent detection** — Auto-detects old IPC section references, maps to BNS equivalents
+- **RS256 JWT auth** — Algorithm-pinned, role-based (free/pro/enterprise/admin)
+- **Backpressure** — Semaphore worker pool + circuit breaker + per-tier rate limiting
+- **PostgreSQL with RLS** — Tenant isolation via `SET LOCAL app.tenant_id`
+- **SSE streaming** — Real-time token streaming with source citations
+- **Guardrails** — Abstention when confidence < 0.72, prompt injection detection
+- **RAGAS evaluation** — CI pipeline with 50 golden queries, faithfulness gate
 
 ---
 
 ## Prerequisites
 
-| Tool | Install |
-|------|---------|
-| Docker | https://docs.docker.com/get-docker/ |
-| Ollama | https://ollama.com/download |
-| Python 3.10+ | https://www.python.org/downloads/ |
-| Go 1.21+ | https://go.dev/dl/ |
+| Tool | Version | Install |
+|------|---------|---------|
+| Go | 1.25+ | https://go.dev/dl/ |
+| Python | 3.12+ | https://www.python.org/downloads/ |
+| Docker | Latest | https://docs.docker.com/get-docker/ |
+| Ollama | Latest | https://ollama.com/download |
 
 ---
 
-## Step 1 — Start Qdrant
+## Quick Start
+
+### 1. Start infrastructure
 
 ```bash
-docker run -d --name qdrant -p 6333:6333 -p 6334:6334 qdrant/qdrant
+make docker-up   # Qdrant (6333/6334) + Redis (6379) + Postgres (5432)
 ```
 
-Verify: open http://localhost:6333/dashboard in your browser.
-
----
-
-## Step 2 — Pull Ollama Models
+### 2. Pull Ollama models
 
 ```bash
-# Embedding model (768-dim vectors)
-ollama pull nomic-embed-text
-
-# Chat / generation model
-ollama pull llama3.2
+ollama pull nomic-embed-text   # 768-dim embeddings
+ollama pull llama3.2           # chat model
 ```
 
-> **Tip:** `llama3.2` is ~2 GB. If you want a smaller model, edit `config.json`
-> and change `"chat_model"` to `"tinyllama"` or any other model you have pulled.
-
----
-
-## Step 3 — Ingest the Constitution
+### 3. Ingest documents
 
 ```bash
 cd ingest
 pip install -r requirements.txt
-python ingest.py --reset
+python -m pipeline.run --source constitution_of_india --file ../data/constitution.pdf
 ```
 
-Expected output:
-
-```
-============================================================
-  Indian Legal GPT — Ingest Pipeline
-============================================================
-  PDF        : ../data/constitution.pdf
-  Collection : constitution
-  Mode       : auto
-  Embed model: nomic-embed-text
-  Dry run    : False
-============================================================
-[chunker] Extracting text from ../data/constitution.pdf …
-[chunker] Extracted 412,xxx characters
-[chunker] Produced 4xx chunks
-
-[ingest] Sample chunk:
-  Article  : 21
-  Title    : Protection of life and personal liberty
-  Part     : Part III
-  Preview  : No person shall be deprived of his life or personal liberty …
-
-[embedder] 450/450 embedded …
-[loader] Creating collection 'constitution' (size=768, distance=COSINE) …
-[loader] Done. 450 points in 'constitution'.
-```
-
-### Ingest CLI options
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--pdf` | `../data/constitution.pdf` | Path to input PDF |
-| `--collection` | `constitution` | Qdrant collection name |
-| `--source` | `constitution_of_india` | Metadata source tag |
-| `--doc-type` | `constitutional_provision` | Metadata document type |
-| `--mode` | `auto` | `auto` / `constitution` / `pages` |
-| `--reset` | off | Drop & recreate collection before loading |
-| `--dry-run` | off | Parse + embed only; skip Qdrant write |
-| `--embed-model` | `nomic-embed-text` | Ollama embedding model |
-| `--chat-model` | `llama3.2` | (config.json) LLM model |
-| `--qdrant-host` | `localhost` | Qdrant host |
-| `--qdrant-port` | `6333` | Qdrant port |
-| `--ollama-url` | `http://localhost:11434` | Ollama base URL |
-
----
-
-## Step 4 — Build the CLI Tool
+### 4. Run the query service
 
 ```bash
-# From the project root
-go build -o legal-gpt.exe .
+# Dev mode (no auth required)
+DEV_MODE=true make dev
+```
+
+### 5. Query
+
+```bash
+# SSE streaming chat
+curl -N -X POST http://localhost:8080/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What does Article 21 say about right to life?"}'
+
+# Non-streaming search
+curl -X POST http://localhost:8080/api/v1/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "fundamental rights", "top_k": 5}'
 ```
 
 ---
 
-## Step 5 — Ask Questions (Interactive Mode)
+## API Endpoints
 
-```bash
-.\legal-gpt.exe
-```
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/v1/health/live` | None | Liveness probe |
+| GET | `/api/v1/health/ready` | None | Readiness probe (Qdrant + LLM + Postgres) |
+| POST | `/api/v1/auth/token` | None | Issue RS256 JWT (client_credentials) |
+| POST | `/api/v1/chat` | JWT/Dev | SSE streaming chat with RAG pipeline |
+| POST | `/api/v1/search` | JWT/Dev | Non-streaming vector search |
+| GET | `/api/v1/admin/routing-stats` | JWT (admin) | LLM routing distribution |
 
-Expected output:
+### SSE event types (`/chat`)
 
-```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Indian Legal GPT — Interactive CLI
-  Qdrant     : localhost:6334
-  Ollama     : http://localhost:11434
-  Embed      : nomic-embed-text
-  Chat       : llama3.2
-  Collection : constitution
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Type your question and press Enter.
-  Type 'exit' or 'quit' to stop.
-
->>
-```
-
-### Sample questions to try
-
-```
->> What are the fundamental rights of a citizen?
->> What does Article 21 say about right to life?
->> What are the restrictions on freedom of speech?
->> Explain the Directive Principles of State Policy
->> What is the right to equality under the Constitution?
-```
-
-Each answer includes cited sources with article numbers and response latency:
-
-```
->> What is Article 32?
-
-Article 32 provides the right to move the Supreme Court for enforcement
-of the fundamental rights conferred by Part III of the Constitution...
-
-  Sources:
-    [1] Article 32 — Remedies for enforcement of rights (score: 0.91)
-    [2] Article 226 — Power of High Courts to issue certain writs (score: 0.78)
-
-  (2.4s)
-```
+| Event | Description |
+|-------|-------------|
+| `chunk` | Streamed token delta |
+| `sources` | Retrieved source citations |
+| `meta` | Token counts, latency, provider used |
+| `abstain` | Confidence too low to answer |
+| `error` | Processing error |
+| `done` | Stream complete |
 
 ---
 
 ## Configuration
 
-Edit `config.json` in the project root to change any default:
+All configuration is via environment variables. No `.env` files in git.
 
-```json
-{
-  "qdrant_host": "localhost",
-  "qdrant_port": 6334,
-  "ollama_url": "http://localhost:11434",
-  "embed_model": "nomic-embed-text",
-  "chat_model": "llama3.2",
-  "vector_size": 768,
-  "default_top_k": 5,
-  "default_collection": "constitution"
-}
-```
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLM_PROVIDER` | `ollama` | `ollama`, `claude`, `gemini`, or `router` |
+| `OLLAMA_URL` | `http://localhost:11434` | Ollama base URL |
+| `CLAUDE_API_KEY` | — | Required for Claude provider |
+| `GEMINI_API_KEY` | — | Required for Gemini provider |
+| `QDRANT_HOST` | `localhost` | Qdrant host |
+| `QDRANT_PORT` | `6334` | Qdrant gRPC port |
+| `EMBED_MODEL` | `nomic-embed-text` | Embedding model |
+| `CHAT_MODEL` | `llama3.2` | Chat model |
+| `VECTOR_SIZE` | `768` | Must match embedding model dimensions |
+| `API_PORT` | `8080` | HTTP server port |
+| `DEV_MODE` | `false` | Skip auth when `true` |
+| `DEV_TOKEN` | — | Static dev auth token |
+| `POSTGRES_DSN` | — | PostgreSQL connection string |
+| `JWT_PUBLIC_KEY_PATH` | — | RSA public key for JWT validation |
+| `JWT_PRIVATE_KEY_PATH` | — | RSA private key for JWT issuance |
+| `WORKER_POOL_SIZE` | `50` | Max concurrent requests |
+| `LLM_ROUTE_THRESHOLD` | `500` | Token threshold for router |
+| `RERANK_PROVIDER` | — | `cohere`, `local`, or empty (disabled) |
+| `RERANK_MODEL` | — | Override default rerank model |
+| `COHERE_API_KEY` | — | Required for Cohere reranking |
 
 ---
 
-## Adding More Legal Documents (Generic Usage)
-
-The system is designed to be portable. To add IPC, CrPC, or any other statute:
+## Commands
 
 ```bash
-# 1. Ingest the new document into its own collection
-cd ingest
-python ingest.py \
-  --pdf ../data/ipc.pdf \
-  --collection ipc \
-  --source ipc_1860 \
-  --doc-type penal_code \
-  --reset
+# Development
+make dev                    # Run query service locally
+make docker-up              # Start Qdrant + Redis + Postgres
+make docker-down            # Stop infrastructure
 
-# 2. Update config.json to point to the new collection
-#    "default_collection": "ipc"
-# 3. Run the CLI
-.\legal-gpt.exe
->> What is the punishment for theft?
+# Testing
+make test                   # Go tests with race detector + coverage
+make test-python            # Python pytest
+go test -run TestName ./internal/rag/...   # Single test
+
+# Linting
+make lint                   # golangci-lint + ruff
+make lint-fix               # Auto-fix
+
+# Build
+make build                  # Binary → bin/query-service
+
+# Evaluation
+make eval                   # Run RAGAS evaluation suite
 ```
 
 ---
@@ -225,20 +190,61 @@ python ingest.py \
 ## Project Structure
 
 ```
-testQdrant/
-├── config.json          # Runtime config (models, ports)
-├── main.go              # Interactive CLI — REPL loop
-├── config.go            # Config loader
-├── ollama.go            # Ollama embed + chat client
-├── rag.go               # Vector search + RAG prompt builder
-├── go.mod / go.sum
-├── data/
-│   └── constitution.pdf
-└── ingest/
-    ├── chunker.py        # PDF → structured article chunks
-    ├── embedder.py       # Ollama embedding wrapper
-    ├── qdrant_loader.py  # Qdrant upsert helper
-    ├── ingest.py         # Pipeline CLI runner
-    ├── pdf_parser.py     # Original constitution parser
-    └── requirements.txt
+legalGPT-POC/
+├── services/query/              # Go HTTP service (Gin)
+│   ├── main.go                  # Entry point, wiring
+│   ├── handler/                 # HTTP handlers (chat, search, health, auth, admin)
+│   └── middleware/              # JWT auth, rate limiting
+├── internal/
+│   ├── llm/                     # LLM providers (Ollama, Claude, Gemini, Router)
+│   │   ├── provider.go          # LLMProvider interface
+│   │   ├── factory.go           # Config-driven provider creation
+│   │   ├── router.go            # Complexity-based routing
+│   │   └── breaker.go           # Circuit breaker wrapper
+│   ├── rag/                     # RAG pipeline
+│   │   ├── hybrid.go            # Dense + BM25 hybrid retriever (RRF)
+│   │   ├── rerank.go            # Cross-encoder reranker (Cohere + local)
+│   │   ├── ipc_detect.go        # IPC section detection → BNS mapping
+│   │   ├── context.go           # Token-budget context assembly
+│   │   ├── guardrail.go         # Abstention + injection detection
+│   │   ├── retriever.go         # System prompt + message builder
+│   │   └── vocab.go             # BM25 vocabulary loader
+│   ├── store/                   # Data stores
+│   │   ├── vector.go            # VectorStore interface
+│   │   ├── qdrant.go            # Qdrant client (Search, SearchHybrid, SearchMulti)
+│   │   └── postgres.go          # PostgreSQL repo (pgx/v5, WithTenant RLS)
+│   ├── db/                      # Migrations + IPC loader
+│   ├── config/                  # Environment-based config
+│   ├── worker/                  # Semaphore worker pool
+│   └── telemetry/               # OpenTelemetry stub
+├── ingest/                      # Python ingest pipeline
+│   ├── chunker/                 # SAC chunking (Part → Chapter → Section)
+│   ├── embedder/                # Dense + BM25 sparse encoding
+│   ├── store/                   # Qdrant batch upsert
+│   ├── quality/                 # Post-ingest validation
+│   └── pipeline/                # CLI runner
+├── eval/                        # RAGAS evaluation
+│   ├── golden_set.jsonl         # 50 golden queries
+│   ├── ragas_eval.py            # Evaluation runner
+│   └── judge_prompt.py          # LLM-as-judge scorer
+├── deployments/docker/          # Docker Compose for local infra
+├── scripts/                     # IPC→BNS mapping JSON
+├── data/                        # Source PDFs + vocab files
+├── .github/workflows/           # CI (lint/test/build) + RAGAS eval
+└── CLAUDE.md                    # Codebase conventions and architecture
 ```
+
+---
+
+## Domain Context
+
+- **BNS** — Bharatiya Nyaya Sanhita 2023 (replaces IPC)
+- **BNSS** — Bharatiya Nagarik Suraksha Sanhita 2023 (replaces CrPC)
+- **BSA** — Bharatiya Sakshya Adhiniyam 2023 (replaces Indian Evidence Act)
+- IPC-to-BNS mapping loaded from `scripts/ipc_bns_map.json`
+
+---
+
+## License
+
+Private — not open source.
